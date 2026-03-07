@@ -59,11 +59,11 @@ etcetera = "0.11"
 arc-swap = "1.8"
 
 [workspace.package]
-version = "25.7.1"
+version = "25.7.2-wip"
 edition = "2021"
 authors = ["Blaž Hrastnik <blaz@mxxn.io>"]
 categories = ["editor"]
 repository = "https://github.com/helix-editor/helix"
 homepage = "https://helix-editor.com"
 license = "MPL-2.0"
-rust-version = "1.87"
+rust-version = "1.94"
