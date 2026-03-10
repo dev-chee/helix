@@ -19,7 +19,7 @@ fn setup_logging(verbosity: u64) -> Result<()> {
         .format(|out, message, record| {
             out.finish(format_args!(
                 "{} {} [{}] {}",
-                chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f"),
+                chrono::Local::now().format("%y-%m-%dT%H:%M:%S%.3f"),
                 record.target(),
                 record.level(),
                 message
