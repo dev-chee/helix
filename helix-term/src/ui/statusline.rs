@@ -336,9 +336,9 @@ where
     write(
         context,
         if count == 1 {
-            " 1 sel ".into()
+            " 1 SEL ".into()
         } else {
-            format!(" {}/{count} sels ", selection.primary_index() + 1).into()
+            format!(" {}/{count} SELs ", selection.primary_index() + 1).into()
         },
     );
 }
@@ -350,7 +350,7 @@ where
     let tot_sel = context.doc.selection(context.view.id).primary().len();
     write(
         context,
-        format!(" {} char{} ", tot_sel, if tot_sel == 1 { "" } else { "s" }).into(),
+        format!(" {} CH{} ", tot_sel, if tot_sel == 1 { "" } else { "s" }).into(),
     );
 }
 
@@ -402,10 +402,7 @@ where
     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
 {
     let enc = context.doc.encoding();
-
-    if enc != encoding::UTF_8 {
-        write(context, format!(" {} ", enc.name()).into());
-    }
+    write(context, format!(" {} ", enc.name()).into());
 }
 
 fn render_file_line_ending<'a, F>(context: &mut RenderContext<'a>, write: F)
@@ -491,11 +488,7 @@ fn render_read_only_indicator<'a, F>(context: &mut RenderContext<'a>, write: F)
 where
     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
 {
-    let title = if context.doc.readonly {
-        " [readonly] "
-    } else {
-        ""
-    };
+    let title = if context.doc.readonly { " [RO] " } else { "" };
     write(context, title.into());
 }
 
@@ -542,7 +535,11 @@ where
         .unwrap_or_default()
         .to_string();
 
-    write(context, head.into());
+    if head.is_empty() {
+        write(context, " ".into());
+    } else {
+        write(context, format!(" ⎇ {} ", head).into());
+    }
 }
 
 fn render_register<'a, F>(context: &mut RenderContext<'a>, write: F)
@@ -550,7 +547,7 @@ where
     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
 {
     if let Some(reg) = context.editor.selected_register {
-        write(context, format!(" reg={} ", reg).into())
+        write(context, format!(" REG={} ", reg).into())
     }
 }
 
@@ -565,7 +562,7 @@ where
         match style {
             IndentStyle::Tabs => " tabs ".into(),
             IndentStyle::Spaces(indent) => {
-                format!(" {} space{} ", indent, if indent == 1 { "" } else { "s" }).into()
+                format!(" {} SPACE{} ", indent, if indent == 1 { "" } else { "s" }).into()
             }
         },
     );
