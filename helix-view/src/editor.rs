@@ -374,6 +374,7 @@ pub struct Config {
     #[serde(default)]
     pub search: SearchConfig,
     pub lsp: LspConfig,
+    pub agent: AcpConfig,
     pub terminal: Option<TerminalConfig>,
     /// Column numbers at which to draw the rulers. Defaults to `[]`, meaning no rulers.
     pub rulers: Vec<u16>,
@@ -575,6 +576,52 @@ impl Default for LspConfig {
             display_color_swatches: true,
         }
     }
+}
+
+/// Configuration for ACP (Agent Client Protocol) agent connections.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct AcpConfig {
+    /// Enable ACP agent support. Defaults to `true`.
+    pub enable: bool,
+    /// Display tool call progress in the status-line while an agent is running.
+    pub display_tool_calls: bool,
+    /// Automatically approve `fs/read_text_file` requests from agents.
+    pub auto_approve_reads: bool,
+    /// Configured agent servers.
+    /// Maps to `[[agent.servers]]` entries in `config.toml`.
+    pub servers: Vec<AcpServerConfig>,
+}
+
+impl Default for AcpConfig {
+    fn default() -> Self {
+        Self {
+            enable: true,
+            display_tool_calls: true,
+            auto_approve_reads: true,
+            servers: Vec::new(),
+        }
+    }
+}
+
+/// Configuration for a single ACP agent server executable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct AcpServerConfig {
+    /// Logical name used throughout the editor (e.g. in key bindings).
+    pub name: String,
+    /// Path to the agent executable.
+    pub command: PathBuf,
+    /// Arguments forwarded to the executable.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Request timeout in seconds. Defaults to 60.
+    #[serde(default = "default_acp_timeout")]
+    pub timeout: u64,
+}
+
+fn default_acp_timeout() -> u64 {
+    60
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1116,6 +1163,7 @@ impl Default for Config {
             undercurl: false,
             search: SearchConfig::default(),
             lsp: LspConfig::default(),
+            agent: AcpConfig::default(),
             terminal: get_terminal_provider(),
             rulers: Vec::new(),
             whitespace: WhitespaceConfig::default(),
@@ -1200,6 +1248,14 @@ pub struct Editor {
 
     pub debug_adapters: dap::registry::Registry,
     pub breakpoints: HashMap<PathBuf, Vec<Breakpoint>>,
+    pub agent_clients: helix_acp::Registry,
+    /// Runtime state for each active ACP session.
+    pub acp_sessions: HashMap<helix_acp::types::SessionId, crate::handlers::acp::AgentSessionState>,
+    /// Events from ACP handler that require Compositor access (permission dialogs, etc.).
+    pub acp_ui_events: (
+        tokio::sync::mpsc::UnboundedSender<crate::handlers::acp::AgentUiEvent>,
+        tokio::sync::mpsc::UnboundedReceiver<crate::handlers::acp::AgentUiEvent>,
+    ),
 
     pub syn_loader: Arc<ArcSwap<syntax::Loader>>,
     pub theme_loader: Arc<theme::Loader>,
@@ -1257,6 +1313,7 @@ pub enum EditorEvent {
     ConfigEvent(ConfigEvent),
     LanguageServerMessage((LanguageServerId, Call)),
     DebuggerEvent((DebugAdapterId, dap::Payload)),
+    AgentClientMessage((helix_acp::AgentClientId, helix_acp::Call)),
     IdleTimer,
     Redraw,
 }
@@ -1345,6 +1402,9 @@ impl Editor {
             diff_providers: DiffProviderRegistry::default(),
             debug_adapters: dap::registry::Registry::new(),
             breakpoints: HashMap::new(),
+            agent_clients: helix_acp::Registry::new(),
+            acp_sessions: HashMap::new(),
+            acp_ui_events: unbounded_channel(),
             syn_loader,
             theme_loader,
             last_theme: None,
@@ -2275,6 +2335,9 @@ impl Editor {
                 }
                 Some(event) = self.debug_adapters.incoming.next() => {
                     return EditorEvent::DebuggerEvent(event)
+                }
+                Some(msg) = self.agent_clients.incoming.next() => {
+                    return EditorEvent::AgentClientMessage(msg)
                 }
 
                 _ = helix_event::redraw_requested() => {

@@ -10,6 +10,8 @@ members = [
   "helix-event",
   "helix-dap-types",
   "helix-dap",
+  "helix-acp-types",
+  "helix-acp",
   "helix-loader",
   "helix-vcs",
   "helix-parsec",

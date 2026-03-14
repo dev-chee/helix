@@ -5,6 +5,7 @@ use tokio::sync::mpsc::Sender;
 use crate::handlers::lsp::SignatureHelpInvoked;
 use crate::{DocumentId, Editor, ViewId};
 
+pub mod acp;
 pub mod completion;
 pub mod dap;
 pub mod diagnostics;

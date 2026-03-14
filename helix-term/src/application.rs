@@ -668,6 +668,9 @@ impl Application {
                     self.render().await;
                 }
             }
+            EditorEvent::AgentClientMessage((client_id, call)) => {
+                self.handle_agent_client_message(client_id, call).await;
+            }
             EditorEvent::Redraw => {
                 self.render().await;
             }
@@ -749,6 +752,124 @@ impl Application {
 
         if should_redraw && !self.editor.should_close() {
             self.render().await;
+        }
+    }
+
+    pub async fn handle_agent_client_message(
+        &mut self,
+        client_id: helix_acp::AgentClientId,
+        call: helix_acp::Call,
+    ) {
+        use helix_acp::Call;
+        use helix_view::handlers::acp;
+
+        match call {
+            Call::Notification(notif) => {
+                acp::handle_notification(&mut self.editor, client_id, notif);
+                // Redraw already requested inside handle_notification.
+            }
+            Call::MethodCall(method_call) => {
+                let ui_event =
+                    acp::handle_method_call(&mut self.editor, client_id, method_call);
+
+                if let Some(ui_event) = ui_event {
+                    self.handle_agent_ui_event(ui_event).await;
+                }
+            }
+        }
+    }
+
+    async fn handle_agent_ui_event(&mut self, event: helix_view::handlers::acp::AgentUiEvent) {
+        use helix_view::handlers::acp::AgentUiEvent;
+
+        match event {
+            AgentUiEvent::RequestPermission {
+                client_id,
+                request_id,
+                session_id: _,
+                tool_call_id,
+                options,
+            } => {
+                // Build a prompt asking the user to choose a permission option.
+                let options_clone = options.clone();
+                let client_id_copy = client_id;
+                let request_id_copy = request_id.clone();
+
+                let choices: Vec<String> = options.iter().map(|o| o.name.clone()).collect();
+                let prompt = Box::new(
+                    ui::Prompt::new(
+                        format!("Agent tool call '{}' — allow?", tool_call_id).into(),
+                        None,
+                        ui::completers::none,
+                        move |cx, _input, event| {
+                            if event != ui::PromptEvent::Validate {
+                                return;
+                            }
+                            // Choose first option (Allow once) by default.
+                            // A richer UX (picker) can be added later.
+                            let outcome = helix_acp::types::PermissionOutcome::Selected {
+                                option_id: options_clone
+                                    .first()
+                                    .map(|o| o.option_id.clone())
+                                    .unwrap_or_default(),
+                            };
+                            if let Some(client) =
+                                cx.editor.agent_clients.get(client_id_copy)
+                            {
+                                client.reply_permission(request_id_copy.clone(), outcome);
+                            }
+                        },
+                    )
+                    .with_line(
+                        choices
+                            .first()
+                            .cloned()
+                            .unwrap_or_default()
+                            .into(),
+                        &self.editor,
+                    ),
+                );
+                self.compositor.push(prompt);
+            }
+
+            AgentUiEvent::WriteFile {
+                client_id,
+                request_id,
+                session_id: _,
+                path,
+                content,
+            } => {
+                // Show a confirmation prompt before applying the write.
+                let path_clone = path.clone();
+                let content_clone = content.clone();
+                let prompt = Box::new(ui::Prompt::new(
+                    format!("Agent wants to write '{}' — apply? (y/n)", path.display()).into(),
+                    None,
+                    ui::completers::none,
+                    move |cx, input, event| {
+                        if event != ui::PromptEvent::Validate {
+                            return;
+                        }
+                        if input.trim().eq_ignore_ascii_case("y") {
+                            helix_view::handlers::acp::apply_write(
+                                &mut cx.editor,
+                                client_id,
+                                request_id.clone(),
+                                path_clone.clone(),
+                                content_clone.clone(),
+                            );
+                        } else {
+                            if let Some(client) = cx.editor.agent_clients.get(client_id) {
+                                client.reply_write_file_error(
+                                    request_id.clone(),
+                                    "Rejected by user".to_string(),
+                                );
+                            }
+                        }
+                    },
+                ));
+                self.compositor.push(prompt);
+            }
         }
     }
 

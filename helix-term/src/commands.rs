@@ -1,8 +1,10 @@
+pub(crate) mod acp;
 pub(crate) mod dap;
 pub(crate) mod lsp;
 pub(crate) mod syntax;
 pub(crate) mod typed;
 
+pub use acp::*;
 pub use dap::*;
 use futures_util::FutureExt;
 use helix_event::status;
@@ -616,6 +618,12 @@ impl MappableCommand {
         goto_prev_tabstop, "Goto next snippet placeholder",
         rotate_selections_first, "Make the first selection your primary one",
         rotate_selections_last, "Make the last selection your primary one",
+        agent_connect, "Connect to an ACP agent (launches the sub-process)",
+        agent_send_selection, "Send current selection to the active ACP agent",
+        agent_prompt, "Open a prompt to send a message to the active ACP agent",
+        agent_output, "Show the active ACP agent's output panel",
+        agent_cancel, "Cancel the active ACP agent turn",
+        agent_sessions, "List active ACP agent sessions",
     );
 }
 
