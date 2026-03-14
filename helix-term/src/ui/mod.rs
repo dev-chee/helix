@@ -3,6 +3,7 @@ mod document;
 pub(crate) mod editor;
 mod info;
 pub mod lsp;
+pub mod acp;
 mod markdown;
 pub mod menu;
 pub mod overlay;
@@ -789,6 +790,21 @@ pub mod completers {
         }
 
         completions
+    }
+
+    /// Completes names of configured AI agents
+    pub fn agent(editor: &Editor, input: &str) -> Vec<Completion> {
+        let agents: Vec<_> = editor
+            .agents
+            .configurations()
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+
+        fuzzy_match(input, agents, false)
+            .into_iter()
+            .map(|(name, _)| ((0..), Span::raw(name.to_string())))
+            .collect()
     }
 }
 

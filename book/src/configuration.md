@@ -23,7 +23,45 @@ select = "underline"
 
 [editor.file-picker]
 hidden = false
+
+# AI Agent configuration (ACP)
+[agent]
+claude = { command = "claude", args = ["--mcp"], timeout = 120 }
 ```
+
+## Agent Configuration
+
+Helix supports AI coding agents through the Agent Client Protocol (ACP). You can configure agents in your `config.toml`:
+
+```toml
+[agent]
+# Example: Claude Code agent
+claude = { command = "claude", args = ["--mcp"], timeout = 120 }
+
+# Example: Custom agent with environment variables
+my-agent = { command = "my-agent-cli", args = ["--stdio"], enabled = false, environment = { API_KEY = "secret" } }
+```
+
+### Agent Configuration Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `enabled` | bool | `true` | Whether this agent is enabled |
+| `command` | string | (required) | Command to run the agent |
+| `args` | [string] | `[]` | Arguments to pass to the agent |
+| `environment` | map | `{}` | Environment variables for the agent |
+| `config` | value | `null` | Configuration to pass to the agent |
+| `timeout` | int | `60` | Request timeout in seconds |
+
+### Agent Commands
+
+| Command | Description |
+|---------|-------------|
+| `:agent-start <name>` | Start an AI agent |
+| `:agent-stop [name]` | Stop an agent (all if no name given) |
+| `:agent-list` | List running agents |
+| `:agent-prompt <message>` | Send a prompt to an agent |
+| `:agent-cancel` | Cancel current session |
 
 You can use a custom configuration file by specifying it with the `-c` or
 `--config` command line argument, for example `hx -c path/to/custom-config.toml`.

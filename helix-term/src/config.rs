@@ -22,6 +22,7 @@ pub struct ConfigRaw {
     pub theme: Option<theme::Config>,
     pub keys: Option<HashMap<Mode, KeyTrie>>,
     pub editor: Option<toml::Value>,
+    pub agent: Option<toml::Value>,
 }
 
 impl Default for Config {
@@ -56,6 +57,37 @@ impl Display for ConfigLoadError {
 }
 
 impl Config {
+    /// Merge editor and agent configurations from global and local configs
+    fn merge_editor_config(
+        global_editor: Option<toml::Value>,
+        local_editor: Option<toml::Value>,
+        global_agent: Option<toml::Value>,
+        local_agent: Option<toml::Value>,
+    ) -> Result<helix_view::editor::Config, ConfigLoadError> {
+        // Merge editor configs
+        let mut editor = match (global_editor, local_editor) {
+            (None, None) => toml::Value::Table(toml::map::Map::new()),
+            (None, Some(val)) | (Some(val), None) => val,
+            (Some(global), Some(local)) => merge_toml_values(global, local, 3),
+        };
+
+        // Merge agent configs
+        let agent = match (global_agent, local_agent) {
+            (None, None) => None,
+            (None, Some(val)) | (Some(val), None) => Some(val),
+            (Some(global), Some(local)) => Some(merge_toml_values(global, local, 3)),
+        };
+
+        // Add agent to editor config if present
+        if let Some(agent_value) = agent {
+            if let toml::Value::Table(ref mut table) = editor {
+                table.insert("agent".to_string(), agent_value);
+            }
+        }
+
+        editor.try_into().map_err(ConfigLoadError::BadConfig)
+    }
+
     pub fn load(
         global: Result<String, ConfigLoadError>,
         local: Result<String, ConfigLoadError>,
@@ -74,15 +106,7 @@ impl Config {
                     merge_keys(&mut keys, local_keys)
                 }
 
-                let editor = match (global.editor, local.editor) {
-                    (None, None) => helix_view::editor::Config::default(),
-                    (None, Some(val)) | (Some(val), None) => {
-                        val.try_into().map_err(ConfigLoadError::BadConfig)?
-                    }
-                    (Some(global), Some(local)) => merge_toml_values(global, local, 3)
-                        .try_into()
-                        .map_err(ConfigLoadError::BadConfig)?,
-                };
+                let editor = Self::merge_editor_config(global.editor, local.editor, global.agent, local.agent)?;
 
                 Config {
                     theme: local.theme.or(global.theme),
@@ -103,10 +127,7 @@ impl Config {
                 Config {
                     theme: config.theme,
                     keys,
-                    editor: config.editor.map_or_else(
-                        || Ok(helix_view::editor::Config::default()),
-                        |val| val.try_into().map_err(ConfigLoadError::BadConfig),
-                    )?,
+                    editor: Self::merge_editor_config(config.editor, None, config.agent, None)?,
                 }
             }
 
@@ -183,5 +204,20 @@ mod tests {
         // From the Default trait
         let default_keys = Config::default().keys;
         assert_eq!(default_keys, keymap::default());
+    }
+
+    #[test]
+    fn parsing_agent_config() {
+        let config = r#"
+            [agent]
+            iflow = { command = "iflow", args = ["--experimental-acp"], timeout = 120 }
+        "#;
+
+        let loaded = Config::load_test(config);
+        assert!(loaded.editor.agent.contains_key("iflow"));
+        let iflow_config = loaded.editor.agent.get("iflow").unwrap();
+        assert_eq!(iflow_config.command, "iflow");
+        assert_eq!(iflow_config.args, vec!["--experimental-acp"]);
+        assert_eq!(iflow_config.timeout, 120);
     }
 }

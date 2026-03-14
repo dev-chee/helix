@@ -2786,6 +2786,194 @@ fn noop(_cx: &mut compositor::Context, _args: Args, _event: PromptEvent) -> anyh
     Ok(())
 }
 
+// Agent commands
+fn agent_start(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let agent_name = args.first().unwrap_or("");
+    if agent_name.is_empty() {
+        anyhow::bail!("agent name is required");
+    }
+
+    // Check if agent configuration exists
+    if cx.editor.agents.get_configuration(agent_name).is_none() {
+        anyhow::bail!("agent '{}' not found in configuration", agent_name);
+    }
+
+    let config = cx.editor.agents.get_configuration(agent_name).unwrap();
+    if !config.enabled {
+        anyhow::bail!("agent '{}' is disabled", agent_name);
+    }
+
+    // Get current document path as root path
+    let root_path = doc!(cx.editor)
+        .path()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+    // Use the Registry's get method to start or get the agent
+    match cx.editor.agents.get(agent_name, &root_path) {
+        Some(Ok(_client)) => {
+            cx.editor.set_status(format!("Started agent '{}'", agent_name));
+        }
+        Some(Err(e)) => {
+            cx.editor.set_error(format!("Failed to start agent '{}': {}", agent_name, e));
+        }
+        None => {
+            cx.editor.set_error(format!("Agent '{}' not available", agent_name));
+        }
+    }
+
+    Ok(())
+}
+
+fn agent_stop(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let agent_name = args.first().unwrap_or("");
+    if agent_name.is_empty() {
+        // Stop all agents
+        cx.editor.agents.stop_all();
+        cx.editor.set_status("Stopped all agents");
+        return Ok(());
+    }
+
+    // Stop specific agent
+    cx.editor.agents.stop(agent_name);
+    cx.editor.set_status(format!("Stopped agent '{}'", agent_name));
+
+    Ok(())
+}
+
+fn agent_list(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    if cx.editor.agents.is_empty() {
+        cx.editor.set_status("No agents running");
+        return Ok(());
+    }
+
+    let mut status = String::new();
+    for agent in cx.editor.agents.iter_agents() {
+        use std::fmt::Write;
+        write!(&mut status, "{} (active) ", agent.name()).unwrap();
+    }
+    cx.editor.set_status(status);
+
+    Ok(())
+}
+
+fn agent_prompt(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let prompt = args.first().unwrap_or("");
+    if prompt.is_empty() {
+        anyhow::bail!("prompt is required");
+    }
+
+    // Find an active agent
+    if cx.editor.agents.is_empty() {
+        anyhow::bail!("no agents running. Use :agent-start to start an agent");
+    }
+
+    // Use the first available agent
+    let agent = cx.editor.agents.iter_agents().next().unwrap().clone();
+    let agent_id = agent.id();
+
+    // Get or create a session
+    let session_id = if let Some((sid, _)) = cx.editor.agent_sessions.iter().next() {
+        sid.clone()
+    } else {
+        // Get cwd for the session
+        let cwd = doc!(cx.editor)
+            .path()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+        // Create a new session (blocking)
+        let response = tokio::task::block_in_place(|| {
+            helix_lsp::block_on(agent.new_session(cwd))
+        }).map_err(|e| anyhow::anyhow!("failed to create session: {}", e))?;
+
+        let id = response.session_id.clone();
+
+        // Initialize the session
+        cx.editor.agent_sessions.insert(
+            id.clone(),
+            helix_view::editor::AgentSession {
+                session_id: id.clone(),
+                agent_id,
+                status: helix_view::editor::AgentSessionStatus::Idle,
+                messages: Vec::new(),
+            },
+        );
+        id
+    };
+
+    // Add user message to session
+    if let Some(session) = cx.editor.agent_sessions.get_mut(&session_id) {
+        session.messages.push(helix_view::editor::AgentMessage {
+            role: helix_view::editor::AgentRole::User,
+            content: vec![helix_acp::types::ContentBlock::Text(helix_acp::types::TextContent {
+                text: prompt.to_string(),
+            })],
+            timestamp: std::time::Instant::now(),
+        });
+        session.status = helix_view::editor::AgentSessionStatus::Processing;
+    }
+
+    // Send prompt to agent (blocking)
+    let content = vec![helix_acp::types::ContentBlock::Text(helix_acp::types::TextContent {
+        text: prompt.to_string(),
+    })];
+
+    tokio::task::block_in_place(|| {
+        helix_lsp::block_on(agent.prompt(&session_id, content))
+    }).map_err(|e| anyhow::anyhow!("failed to send prompt: {}", e))?;
+
+    cx.editor.set_status("Sent prompt to agent");
+
+    Ok(())
+}
+
+fn agent_cancel(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    // Find an active session and cancel it
+    if let Some((session_id, _)) = cx.editor.agent_sessions.iter().next() {
+        let session_id = session_id.clone();
+
+        // Update session status
+        if let Some(session) = cx.editor.agent_sessions.get_mut(&session_id) {
+            let agent_id = session.agent_id;
+            session.status = helix_view::editor::AgentSessionStatus::Cancelled;
+
+            // Send cancel to agent
+            if let Some(agent) = cx.editor.agents.get_by_id(agent_id) {
+                tokio::task::block_in_place(|| {
+                    helix_lsp::block_on(agent.cancel_session(&session_id, None))
+                }).map_err(|e| anyhow::anyhow!("failed to cancel session: {}", e))?;
+            }
+        }
+
+        cx.editor.set_status("Cancelled session");
+    } else {
+        cx.editor.set_status("No active session to cancel");
+    }
+
+    Ok(())
+}
+
 /// This command accepts a single boolean --skip-visible flag and no positionals.
 const BUFFER_CLOSE_OTHERS_SIGNATURE: Signature = Signature {
     positionals: (0, Some(0)),
@@ -3856,6 +4044,61 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (1, None),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "agent-start",
+        aliases: &[],
+        doc: "Start an AI agent. Usage: agent-start <agent-name>",
+        fun: agent_start,
+        completer: CommandCompleter::positional(&[completers::agent]),
+        signature: Signature {
+            positionals: (1, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "agent-stop",
+        aliases: &[],
+        doc: "Stop an AI agent. Usage: agent-stop <agent-name> (or no args to stop all)",
+        fun: agent_stop,
+        completer: CommandCompleter::positional(&[completers::agent]),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "agent-list",
+        aliases: &[],
+        doc: "List running AI agents.",
+        fun: agent_list,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "agent-prompt",
+        aliases: &[],
+        doc: "Send a prompt to an AI agent. Usage: agent-prompt <message>",
+        fun: agent_prompt,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (1, None),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "agent-cancel",
+        aliases: &[],
+        doc: "Cancel the current agent session.",
+        fun: agent_cancel,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
             ..Signature::DEFAULT
         },
     },

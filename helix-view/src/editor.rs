@@ -52,6 +52,8 @@ use helix_core::{
     Change, LineEnding, Position, Range, Selection, Uri, NATIVE_LINE_ENDING,
 };
 use helix_dap::{self as dap, registry::DebugAdapterId};
+use helix_acp::{self as acp, AgentId};
+use helix_acp::types as acp_types;
 use helix_lsp::lsp;
 use helix_stdx::path::canonicalize;
 
@@ -428,6 +430,9 @@ pub struct Config {
     /// Whether to enable Kitty Keyboard Protocol
     pub kitty_keyboard_protocol: KittyKeyboardProtocolConfig,
     pub buffer_picker: BufferPickerConfig,
+    /// AI Agent configuration
+    #[serde(default)]
+    pub agent: HashMap<String, acp::AgentConfiguration>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, Clone, Copy)]
@@ -1146,6 +1151,7 @@ impl Default for Config {
             rainbow_brackets: false,
             kitty_keyboard_protocol: Default::default(),
             buffer_picker: BufferPickerConfig::default(),
+            agent: HashMap::new(),
         }
     }
 }
@@ -1200,6 +1206,11 @@ pub struct Editor {
 
     pub debug_adapters: dap::registry::Registry,
     pub breakpoints: HashMap<PathBuf, Vec<Breakpoint>>,
+
+    /// AI coding agents (ACP)
+    pub agents: acp::Registry,
+    /// Active agent sessions
+    pub agent_sessions: HashMap<acp_types::SessionId, AgentSession>,
 
     pub syn_loader: Arc<ArcSwap<syntax::Loader>>,
     pub theme_loader: Arc<theme::Loader>,
@@ -1257,6 +1268,7 @@ pub enum EditorEvent {
     ConfigEvent(ConfigEvent),
     LanguageServerMessage((LanguageServerId, Call)),
     DebuggerEvent((DebugAdapterId, dap::Payload)),
+    AgentMessage((AgentId, acp::transport::Call)),
     IdleTimer,
     Redraw,
 }
@@ -1270,6 +1282,50 @@ pub enum ConfigEvent {
 enum ThemeAction {
     Set,
     Preview,
+}
+
+/// Represents an active agent session
+#[derive(Debug, Clone)]
+pub struct AgentSession {
+    /// Session ID from the agent
+    pub session_id: acp_types::SessionId,
+    /// Agent ID that owns this session
+    pub agent_id: AgentId,
+    /// Conversation history
+    pub messages: Vec<AgentMessage>,
+    /// Current status
+    pub status: AgentSessionStatus,
+}
+
+/// A message in the agent conversation
+#[derive(Debug, Clone)]
+pub struct AgentMessage {
+    /// Role: user or agent
+    pub role: AgentRole,
+    /// Message content
+    pub content: Vec<acp_types::ContentBlock>,
+    /// Timestamp
+    pub timestamp: std::time::Instant,
+}
+
+/// Role in the conversation
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentRole {
+    User,
+    Agent,
+}
+
+/// Status of an agent session
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentSessionStatus {
+    /// Session is idle, ready for input
+    Idle,
+    /// Agent is processing
+    Processing,
+    /// Session has been cancelled
+    Cancelled,
+    /// Session has ended
+    Ended,
 }
 
 #[derive(Debug, Clone)]
@@ -1345,6 +1401,12 @@ impl Editor {
             diff_providers: DiffProviderRegistry::default(),
             debug_adapters: dap::registry::Registry::new(),
             breakpoints: HashMap::new(),
+            agents: {
+                let mut registry = acp::Registry::new();
+                registry.set_configurations(conf.agent.clone());
+                registry
+            },
+            agent_sessions: HashMap::new(),
             syn_loader,
             theme_loader,
             last_theme: None,

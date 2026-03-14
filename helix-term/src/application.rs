@@ -668,6 +668,10 @@ impl Application {
                     self.render().await;
                 }
             }
+            EditorEvent::AgentMessage((id, call)) => {
+                self.handle_agent_message(id, call).await;
+                helix_event::request_redraw();
+            }
             EditorEvent::Redraw => {
                 self.render().await;
             }
@@ -1173,6 +1177,109 @@ impl Application {
                 lsp::MessageType::ERROR => self.editor.set_error(message),
                 lsp::MessageType::WARNING => self.editor.set_warning(message),
                 _ => self.editor.set_status(message),
+            }
+        }
+    }
+
+    pub async fn handle_agent_message(
+        &mut self,
+        agent_id: helix_acp::AgentId,
+        call: helix_acp::Call,
+    ) {
+        use helix_acp::Call;
+
+        match call {
+            Call::Notification(notification) => {
+                log::debug!("Agent notification from {:?}: {:?}", agent_id, notification);
+                // Handle agent notifications (e.g., session updates)
+                if notification.method == "session/update" {
+                    let params_value: serde_json::Value = notification.params.into();
+                    if let Ok(update) = serde_json::from_value::<
+                        helix_acp::types::SessionNotification
+                    >(params_value)
+                    {
+                        self.handle_session_update(agent_id, update);
+                    }
+                }
+            }
+            Call::Request(request) => {
+                log::debug!("Agent request from {:?}: {:?}", agent_id, request);
+                // Handle agent requests
+                self.handle_agent_request(agent_id, request).await;
+            }
+        }
+    }
+
+    fn handle_session_update(
+        &mut self,
+        _agent_id: helix_acp::AgentId,
+        notification: helix_acp::types::SessionNotification,
+    ) {
+        use helix_acp::types::SessionUpdate;
+
+        // Update session state with new content
+        if let Some(session) = self.editor.agent_sessions.get_mut(&notification.session_id) {
+            match notification.update {
+                SessionUpdate::AgentMessageChunk(chunk) => {
+                    // Add the content chunk as a new message
+                    session.messages.push(helix_view::editor::AgentMessage {
+                        role: helix_view::editor::AgentRole::Agent,
+                        content: vec![chunk.content],
+                        timestamp: std::time::Instant::now(),
+                    });
+                    session.status = helix_view::editor::AgentSessionStatus::Processing;
+                }
+                SessionUpdate::AgentTurnEnd(turn_end) => {
+                    // Agent finished a turn
+                    session.status = if turn_end.waiting_for_input {
+                        helix_view::editor::AgentSessionStatus::Idle
+                    } else {
+                        helix_view::editor::AgentSessionStatus::Processing
+                    };
+                }
+                SessionUpdate::TaskStatusUpdate(status_update) => {
+                    log::info!("Task status: {}", status_update.status);
+                }
+                SessionUpdate::PermissionRequest(_perm) => {
+                    // TODO: Handle permission request UI
+                    log::info!("Agent requested permission");
+                }
+                SessionUpdate::ShowDiff(_diff) => {
+                    // TODO: Handle diff preview
+                    log::info!("Agent wants to show diff");
+                }
+                SessionUpdate::SessionEnded(_ended) => {
+                    session.status = helix_view::editor::AgentSessionStatus::Ended;
+                }
+                SessionUpdate::Error(err) => {
+                    log::error!("Agent error: {:?}", err);
+                    session.status = helix_view::editor::AgentSessionStatus::Idle;
+                }
+            }
+        }
+    }
+
+    async fn handle_agent_request(
+        &mut self,
+        agent_id: helix_acp::AgentId,
+        request: helix_acp::transport::Request,
+    ) {
+        // Handle agent-initiated requests
+        match request.method.as_str() {
+            "session/requestPermission" => {
+                // Handle permission requests
+                log::info!("Agent {:?} requested permission", agent_id);
+            }
+            "session/readFile" => {
+                // Handle file read requests
+                log::info!("Agent {:?} requested to read file", agent_id);
+            }
+            "session/writeFile" => {
+                // Handle file write requests
+                log::info!("Agent {:?} requested to write file", agent_id);
+            }
+            _ => {
+                log::warn!("Unknown agent request method: {}", request.method);
             }
         }
     }
