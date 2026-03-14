@@ -1,6 +1,6 @@
 //! ACP Client implementation
 
-use crate::registry::AgentId;
+use crate::registry::{AgentId, TransportType};
 use crate::transport::{Call, Id, Notification, Output, Params, Payload, Request, Transport};
 use crate::{Error, Result};
 use helix_acp_types as acp;
@@ -41,6 +41,7 @@ impl Client {
         id: AgentId,
         name: String,
         req_timeout: u64,
+        transport: TransportType,
     ) -> Result<(Self, UnboundedReceiver<Call>, Arc<Notify>)> {
         let cmd = helix_stdx::env::which(cmd)?;
 
@@ -61,7 +62,7 @@ impl Client {
         let stderr = BufReader::new(process.stderr.take().expect("Failed to open stderr"));
 
         let (server_rx, server_tx, initialize_notify) =
-            Transport::start(reader, writer, stderr, &name);
+            Transport::start(reader, writer, stderr, &name, transport);
 
         let client = Self {
             id,

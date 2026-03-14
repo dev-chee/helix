@@ -27,6 +27,7 @@ hidden = false
 # AI Agent configuration (ACP)
 [agent]
 claude = { command = "claude", args = ["--mcp"], timeout = 120 }
+iflow = { command = "iflow", args = ["--experimental-acp"], transport = "newline-delimited", timeout = 120 }
 ```
 
 ## Agent Configuration
@@ -37,6 +38,9 @@ Helix supports AI coding agents through the Agent Client Protocol (ACP). You can
 [agent]
 # Example: Claude Code agent
 claude = { command = "claude", args = ["--mcp"], timeout = 120 }
+
+# Example: Agent using newline-delimited JSON (e.g., iflow)
+iflow = { command = "iflow", args = ["--experimental-acp"], transport = "newline-delimited", timeout = 120 }
 
 # Example: Custom agent with environment variables
 my-agent = { command = "my-agent-cli", args = ["--stdio"], enabled = false, environment = { API_KEY = "secret" } }
@@ -52,6 +56,12 @@ my-agent = { command = "my-agent-cli", args = ["--stdio"], enabled = false, envi
 | `environment` | map | `{}` | Environment variables for the agent |
 | `config` | value | `null` | Configuration to pass to the agent |
 | `timeout` | int | `60` | Request timeout in seconds |
+| `transport` | string | `"content-length"` | Message format: `"content-length"` (standard) or `"newline-delimited"` |
+
+### Transport Types
+
+- `content-length` (default): Standard JSON-RPC over stdio format with `Content-Length` headers. Most ACP implementations use this.
+- `newline-delimited`: Each JSON message is terminated by a newline. Use this for agents like `iflow` that don't support the standard format.
 
 ### Agent Commands
 

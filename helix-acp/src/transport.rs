@@ -180,6 +180,7 @@ enum ServerMessage {
 #[derive(Debug)]
 pub struct Transport {
     pending_requests: parking_lot::Mutex<HashMap<Id, Sender<Result<Value>>>>,
+    transport_type: crate::registry::TransportType,
 }
 
 impl Transport {
@@ -188,6 +189,7 @@ impl Transport {
         server_stdin: BufWriter<ChildStdin>,
         server_stderr: BufReader<ChildStderr>,
         agent_name: &str,
+        transport_type: crate::registry::TransportType,
     ) -> (
         UnboundedReceiver<Call>,
         UnboundedSender<Payload>,
@@ -199,6 +201,7 @@ impl Transport {
 
         let transport = Self {
             pending_requests: parking_lot::Mutex::new(HashMap::default()),
+            transport_type,
         };
 
         let transport = Arc::new(transport);
@@ -246,6 +249,23 @@ impl Transport {
         output
     }
 
+    /// Receive a newline-delimited JSON message (for agents that don't support Content-Length)
+    async fn recv_server_message_newline(
+        reader: &mut (impl AsyncBufRead + Unpin + Send),
+        buffer: &mut String,
+        agent_name: &str,
+    ) -> Result<ServerMessage> {
+        buffer.clear();
+        if reader.read_line(buffer).await? == 0 {
+            return Err(Error::StreamClosed);
+        }
+
+        let msg = buffer.trim();
+        info!("{} <- {}", agent_name, msg);
+
+        sonic_rs::from_str(msg).map_err(Into::into)
+    }
+
     async fn recv_server_error(
         err: &mut (impl AsyncBufRead + Unpin + Send),
         buffer: &mut String,
@@ -282,10 +302,18 @@ impl Transport {
     ) -> Result<()> {
         info!("-> {}", request);
 
-        server_stdin
-            .write_all(format!("Content-Length: {}\r\n\r\n", request.len()).as_bytes())
-            .await?;
-        server_stdin.write_all(request.as_bytes()).await?;
+        match self.transport_type {
+            crate::registry::TransportType::ContentLength => {
+                server_stdin
+                    .write_all(format!("Content-Length: {}\r\n\r\n", request.len()).as_bytes())
+                    .await?;
+                server_stdin.write_all(request.as_bytes()).await?;
+            }
+            crate::registry::TransportType::NewlineDelimited => {
+                server_stdin.write_all(request.as_bytes()).await?;
+                server_stdin.write_all(b"\n").await?;
+            }
+        }
         server_stdin.flush().await?;
 
         Ok(())
@@ -346,14 +374,27 @@ impl Transport {
         let mut recv_buffer = String::new();
         let mut content_buffer = Vec::new();
         loop {
-            match Self::recv_server_message(
-                &mut server_stdout,
-                &mut recv_buffer,
-                &mut content_buffer,
-                &agent_name,
-            )
-            .await
-            {
+            let result = match transport.transport_type {
+                crate::registry::TransportType::ContentLength => {
+                    Self::recv_server_message(
+                        &mut server_stdout,
+                        &mut recv_buffer,
+                        &mut content_buffer,
+                        &agent_name,
+                    )
+                    .await
+                }
+                crate::registry::TransportType::NewlineDelimited => {
+                    Self::recv_server_message_newline(
+                        &mut server_stdout,
+                        &mut recv_buffer,
+                        &agent_name,
+                    )
+                    .await
+                }
+            };
+
+            match result {
                 Ok(msg) => {
                     if let Err(err) = transport.process_server_message(&client_tx, msg).await {
                         error!("{} err: <- {:?}", agent_name, err);

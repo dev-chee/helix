@@ -17,6 +17,17 @@ slotmap::new_key_type! {
 /// Agent name type
 pub type AgentName = String;
 
+/// Transport format for ACP communication
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum TransportType {
+    /// Standard JSON-RPC with Content-Length header (default)
+    #[default]
+    ContentLength,
+    /// Newline-delimited JSON (for agents that don't support Content-Length)
+    NewlineDelimited,
+}
+
 /// Configuration for an AI coding agent
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -38,6 +49,9 @@ pub struct AgentConfiguration {
     /// Request timeout in seconds
     #[serde(default = "default_agent_timeout")]
     pub timeout: u64,
+    /// Transport format for communication
+    #[serde(default)]
+    pub transport: TransportType,
 }
 
 fn default_agent_enabled() -> bool {
@@ -57,6 +71,7 @@ impl Default for AgentConfiguration {
             environment: HashMap::new(),
             config: None,
             timeout: 60,
+            transport: TransportType::default(),
         }
     }
 }
@@ -248,27 +263,43 @@ fn start_client(
     agent_config: &AgentConfiguration,
     root_path: &PathBuf,
 ) -> Result<(Arc<Client>, UnboundedReceiver<(AgentId, crate::transport::Call)>), StartupError> {
-    let (client, rx, _notify) = Client::start(
+    let (client, rx, initialize_notify) = Client::start(
         &agent_config.command,
         &agent_config.args,
         agent_config.config.clone(),
         agent_config.environment.iter().map(|(k, v)| (k, v)),
         root_path.clone(),
         id,
-        name,
+        name.clone(),
         agent_config.timeout,
+        agent_config.transport,
     )?;
 
     let client = Arc::new(client);
     let (tx, client_rx) = tokio::sync::mpsc::unbounded_channel();
 
     // Forward messages with agent ID
+    let tx_clone = tx.clone();
     tokio::spawn(async move {
         use tokio_stream::StreamExt;
         let mut rx = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
         while let Some(call) = rx.next().await {
-            if tx.send((id, call)).is_err() {
+            if tx_clone.send((id, call)).is_err() {
                 break;
+            }
+        }
+    });
+
+    // Initialize the client asynchronously
+    let client_clone = client.clone();
+    tokio::spawn(async move {
+        match client_clone.initialize(true).await {
+            Ok(response) => {
+                log::info!("Agent '{}' initialized with capabilities: {:?}", name, response.agent_capabilities);
+                initialize_notify.notify_one();
+            }
+            Err(e) => {
+                log::error!("Failed to initialize agent '{}': {}", name, e);
             }
         }
     });
