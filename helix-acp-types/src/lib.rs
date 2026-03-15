@@ -243,3 +243,82 @@ pub struct SessionNotification {
     pub session_id: SessionId,
     pub update: serde_json::Value,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use notification::{Cancel, SessionUpdate};
+    use request::{Initialize, NewSession, Prompt};
+
+    #[test]
+    fn request_method_constants() {
+        assert_eq!(Initialize::METHOD, "initialize");
+        assert_eq!(NewSession::METHOD, "session/new");
+        assert_eq!(Prompt::METHOD, "session/prompt");
+    }
+
+    #[test]
+    fn notification_method_constants() {
+        assert_eq!(Cancel::METHOD, "session/cancel");
+        assert_eq!(SessionUpdate::METHOD, "session/update");
+    }
+
+    #[test]
+    fn initialize_request_roundtrip() {
+        let req = InitializeRequest {
+            protocol_version: 1,
+            client_capabilities: ClientCapabilities::default(),
+            client_info: Some(Implementation {
+                name: "helix".into(),
+                title: Some("Helix".into()),
+                version: Some("1.0".into()),
+            }),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let back: InitializeRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.protocol_version, 1);
+        assert_eq!(back.client_info.as_ref().unwrap().name, "helix");
+    }
+
+    #[test]
+    fn initialize_response_roundtrip() {
+        let resp = InitializeResponse {
+            protocol_version: 1,
+            agent_capabilities: AgentCapabilities::default(),
+            agent_info: None,
+            auth_methods: vec![],
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let back: InitializeResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.protocol_version, 1);
+        assert!(back.auth_methods.is_empty());
+    }
+
+    #[test]
+    fn content_block_text_roundtrip() {
+        let block = ContentBlock::Text {
+            text: "hello".to_string(),
+        };
+        let json = serde_json::to_string(&block).unwrap();
+        assert!(json.contains("text") && json.contains("hello"));
+        let back: ContentBlock = serde_json::from_str(&json).unwrap();
+        match &back {
+            ContentBlock::Text { text } => assert_eq!(text, "hello"),
+            _ => panic!("expected Text variant"),
+        }
+    }
+
+    #[test]
+    fn prompt_request_roundtrip() {
+        let req = PromptRequest {
+            session_id: "sess-1".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "hi".to_string(),
+            }],
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let back: PromptRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.session_id, "sess-1");
+        assert_eq!(back.content.len(), 1);
+    }
+}

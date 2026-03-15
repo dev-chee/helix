@@ -4498,3 +4498,18 @@ fn complete_expansion_kind(content: &str, offset: usize) -> Vec<ui::prompt::Comp
     .map(|(name, _)| (offset.., (*name).into()))
     .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::TYPABLE_COMMAND_LIST;
+
+    #[test]
+    fn acp_typed_commands_registered() {
+        let names: std::collections::HashSet<&str> =
+            TYPABLE_COMMAND_LIST.iter().map(|c| c.name).collect();
+        assert!(names.contains("acp-connect"), "acp-connect should be registered");
+        assert!(names.contains("acp-close"), "acp-close should be registered");
+        assert!(names.contains("acp-prompt"), "acp-prompt should be registered");
+        assert!(names.contains("acp-history"), "acp-history should be registered");
+    }
+}

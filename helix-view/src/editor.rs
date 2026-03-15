@@ -2573,3 +2573,56 @@ impl CursorCache {
         self.0.set(None)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{AcpConfig, AgentConfig};
+
+    #[test]
+    fn acp_config_default() {
+        let c = AcpConfig::default();
+        assert!(c.default_agents.is_empty());
+        assert!(c.agents.is_empty());
+    }
+
+    #[test]
+    fn agent_config_has_feature_empty_only() {
+        let mut a = AgentConfig::default();
+        a.name = "x".into();
+        a.command = "cmd".into();
+        assert!(a.has_feature("plan"));
+        assert!(a.has_feature("translate"));
+    }
+
+    #[test]
+    fn agent_config_has_feature_only_restricts() {
+        let mut a = AgentConfig::default();
+        a.name = "x".into();
+        a.command = "cmd".into();
+        a.only.insert("plan".into());
+        assert!(a.has_feature("plan"));
+        assert!(!a.has_feature("translate"));
+    }
+
+    #[test]
+    fn agent_config_has_feature_excluded() {
+        let mut a = AgentConfig::default();
+        a.name = "x".into();
+        a.command = "cmd".into();
+        a.excluded.insert("translate".into());
+        assert!(a.has_feature("plan"));
+        assert!(!a.has_feature("translate"));
+    }
+
+    #[test]
+    fn agent_config_has_feature_only_and_excluded() {
+        let mut a = AgentConfig::default();
+        a.name = "x".into();
+        a.command = "cmd".into();
+        a.only.insert("plan".into());
+        a.only.insert("translate".into());
+        a.excluded.insert("translate".into());
+        assert!(a.has_feature("plan"));
+        assert!(!a.has_feature("translate"));
+    }
+}

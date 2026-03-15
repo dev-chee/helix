@@ -257,3 +257,61 @@ pub enum Response {
     Single(Output),
     Batch(Vec<Output>),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value;
+
+    #[test]
+    fn method_call_serialize() {
+        let m = MethodCall {
+            jsonrpc: Some(Version::V2),
+            method: "session/prompt".to_owned(),
+            params: Params::Array(vec![Value::from(1)]),
+            id: Id::Num(1),
+        };
+        let s = serde_json::to_string(&m).unwrap();
+        assert!(s.contains("session/prompt") && s.contains("\"id\":1"));
+    }
+
+    #[test]
+    fn notification_serialize_skip_none_params() {
+        let n = Notification {
+            jsonrpc: Some(Version::V2),
+            method: "session/cancel".to_owned(),
+            params: Params::None,
+        };
+        let s = serde_json::to_string(&n).unwrap();
+        assert_eq!(s, r#"{"jsonrpc":"2.0","method":"session/cancel"}"#);
+    }
+
+    #[test]
+    fn id_deserialize() {
+        let id: Id = serde_json::from_str("8").unwrap();
+        assert!(matches!(id, Id::Num(8)));
+        let id: Id = serde_json::from_str("4.0").unwrap();
+        assert!(matches!(id, Id::Num(4)));
+        assert!(serde_json::from_str::<Id>("0.01").is_err());
+    }
+
+    #[test]
+    fn output_success_deserialize() {
+        let json = r#"{"jsonrpc":"2.0","result":{"ok":true},"id":1}"#;
+        let out: Output = serde_json::from_str(json).unwrap();
+        match &out {
+            Output::Success(s) => {
+                assert_eq!(s.id, Id::Num(1));
+                assert!(s.result.get("ok").and_then(|v| v.as_bool()).unwrap_or(false));
+            }
+            _ => panic!("expected Success"),
+        }
+    }
+
+    #[test]
+    fn error_invalid_params() {
+        let e = Error::invalid_params("bad");
+        assert_eq!(e.code.code(), -32602);
+        assert!(e.message.contains("bad"));
+    }
+}
