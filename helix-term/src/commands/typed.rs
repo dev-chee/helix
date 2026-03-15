@@ -1747,6 +1747,133 @@ fn lsp_stop(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> any
     Ok(())
 }
 
+fn acp_connect(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let config = cx.editor.config();
+    let agent_names: Vec<String> = if args.is_empty() {
+        config.acp.default_agents.clone()
+    } else {
+        args.iter().map(|a| a.to_string()).collect()
+    };
+    let root = helix_stdx::env::current_working_dir();
+    for name in &agent_names {
+        let Some(agent_config) = config.acp.agents.iter().find(|a| &a.name == name) else {
+            bail!("Unknown agent: {}", name);
+        };
+        if cx.editor.acp.get_by_name(name).is_some() {
+            continue;
+        }
+        if let Err(e) = cx.editor.acp.start_agent(
+            name.clone(),
+            &agent_config.command,
+            &agent_config.args,
+            &root,
+        ) {
+            bail!("Failed to start agent {}: {}", name, e);
+        }
+        let client = cx.editor.acp.get_by_name(name).cloned().unwrap();
+        let notify = client.initialize_notify.clone();
+        let name_clone = name.clone();
+        tokio::spawn(async move {
+            const ACP_VERSION: u32 = 1;
+            match client.initialize(ACP_VERSION).await {
+                Ok(resp) => {
+                    client.set_initialized(resp);
+                    notify.notify_one();
+                }
+                Err(e) => log::error!("ACP initialize failed for {}: {}", name_clone, e),
+            }
+        });
+    }
+    Ok(())
+}
+
+fn acp_close(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let names: Vec<String> = if args.is_empty() {
+        cx.editor.acp.connected_names().cloned().collect()
+    } else {
+        args.iter().map(|a| a.to_string()).collect()
+    };
+    for name in &names {
+        if let Some(client) = cx.editor.acp.get_by_name(name) {
+            let id = client.id();
+            cx.editor.acp.remove_by_id(id);
+        }
+    }
+    Ok(())
+}
+
+fn acp_prompt(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let prompt_text = args.join(" ").trim().to_string();
+    let clients: Vec<_> = if args.is_empty() {
+        cx.editor.acp.iter().cloned().collect()
+    } else {
+        let connected: std::collections::HashSet<_> =
+            cx.editor.acp.connected_names().cloned().collect();
+        let names: Vec<_> = args.iter().map(|a| a.to_string()).collect();
+        if names.iter().all(|n| connected.contains(n)) {
+            names
+                .iter()
+                .filter_map(|n| cx.editor.acp.get_by_name(n).cloned())
+                .collect()
+        } else {
+            cx.editor.acp.iter().cloned().collect()
+        }
+    };
+    if clients.is_empty() {
+        bail!("No connected agents");
+    }
+    let content = vec![helix_acp_types::ContentBlock::Text {
+        text: prompt_text.clone(),
+    }];
+    let cwd = helix_stdx::env::current_working_dir();
+    let cwd_str = cwd.to_string_lossy().to_string();
+    for client in clients {
+        let content_clone = content.clone();
+        let cwd_clone = cwd_str.clone();
+        tokio::spawn(async move {
+            if !client.is_initialized() {
+                return;
+            }
+            let session_id = match client.session_id() {
+                Some(s) => s,
+                None => {
+                    match client.session_new(cwd_clone).await {
+                        Ok(r) => r.session_id,
+                        Err(e) => {
+                            log::error!("ACP session/new failed: {}", e);
+                            return;
+                        }
+                    }
+                }
+            };
+            let _ = client.session_prompt(session_id, content_clone).await;
+        });
+    }
+    Ok(())
+}
+
+fn acp_history(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let agents: Vec<String> = cx.editor.acp.connected_names().cloned().collect();
+    if agents.is_empty() {
+        cx.editor.set_status("No connected ACP agents".to_string());
+        return Ok(());
+    }
+    cx.editor.set_status(format!("ACP session history: {} (not yet implemented)", agents.join(", ")));
+    Ok(())
+}
+
 fn tree_sitter_scopes(
     cx: &mut compositor::Context,
     _args: Args,
@@ -3444,6 +3571,50 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         doc: "Stops the given language servers, or all language servers that are used by the current file if no arguments are supplied",
         fun: lsp_stop,
         completer: CommandCompleter::all(completers::active_language_servers),
+        signature: Signature {
+            positionals: (0, None),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "acp-connect",
+        aliases: &[],
+        doc: "Connect ACP agents by name (or default_agents if no args). Only agents not already connected.",
+        fun: acp_connect,
+        completer: CommandCompleter::all(completers::acp_configured_agents),
+        signature: Signature {
+            positionals: (0, None),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "acp-close",
+        aliases: &[],
+        doc: "Close connected ACP agents by name, or all if no args.",
+        fun: acp_close,
+        completer: CommandCompleter::all(completers::acp_connected_agents),
+        signature: Signature {
+            positionals: (0, None),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "acp-prompt",
+        aliases: &[],
+        doc: "Send prompt to connected ACP agents (all if no names). Creates session if needed.",
+        fun: acp_prompt,
+        completer: CommandCompleter::all(completers::acp_connected_agents),
+        signature: Signature {
+            positionals: (0, None),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "acp-history",
+        aliases: &[],
+        doc: "Show session history for connected ACP agents.",
+        fun: acp_history,
+        completer: CommandCompleter::all(completers::acp_connected_agents),
         signature: Signature {
             positionals: (0, None),
             ..Signature::DEFAULT

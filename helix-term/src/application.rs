@@ -662,6 +662,10 @@ impl Application {
                 // limit render calls for fast language server messages
                 helix_event::request_redraw();
             }
+            EditorEvent::AcpMessage((agent_id, call)) => {
+                self.handle_acp_message(agent_id, call).await;
+                helix_event::request_redraw();
+            }
             EditorEvent::DebuggerEvent((id, payload)) => {
                 let needs_render = self.editor.handle_debugger_message(id, payload).await;
                 if needs_render {
@@ -1164,6 +1168,55 @@ impl Application {
                 }
             }
             Call::Invalid { id } => log::error!("LSP invalid method call id={:?}", id),
+        }
+    }
+
+    pub async fn handle_acp_message(
+        &mut self,
+        agent_id: helix_acp::AgentId,
+        call: helix_acp::jsonrpc::Call,
+    ) {
+        use helix_acp::jsonrpc::{Call, MethodCall, Notification};
+
+        let Some(agent) = self.editor.acp.get_by_id(agent_id).cloned() else {
+            log::warn!("ACP: agent id {:?} not found", agent_id);
+            return;
+        };
+
+        match call {
+            Call::Notification(Notification { method, params, .. }) => {
+                if method == "session/update" {
+                    if let Ok(update) = params.parse::<helix_acp_types::SessionNotification>() {
+                        log::debug!("ACP session/update from {}: {:?}", agent.name(), update.update);
+                    }
+                }
+            }
+            Call::MethodCall(MethodCall { id, method, params, .. }) => {
+                let reply = match method.as_str() {
+                    "fs/read_text_file" => {
+                        let req: Result<helix_acp_types::ReadTextFileRequest, _> = params.parse();
+                        match req {
+                            Ok(r) => {
+                                let path = std::path::Path::new(&r.path);
+                                match std::fs::read_to_string(path) {
+                                    Ok(content) => Ok(serde_json::to_value(helix_acp_types::ReadTextFileResponse { content }).unwrap()),
+                                    Err(e) => Err(helix_acp::jsonrpc::Error::invalid_params(e.to_string())),
+                                }
+                            }
+                            Err(e) => Err(e),
+                        }
+                    }
+                    _ => Err(helix_acp::jsonrpc::Error {
+                        code: helix_acp::jsonrpc::ErrorCode::MethodNotFound,
+                        message: format!("method not implemented: {}", method),
+                        data: None,
+                    }),
+                };
+                if let Err(e) = agent.reply(id, reply) {
+                    log::error!("ACP reply failed: {}", e);
+                }
+            }
+            Call::Invalid { id } => log::error!("ACP invalid call id={:?}", id),
         }
     }
 

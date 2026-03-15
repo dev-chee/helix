@@ -505,6 +505,32 @@ pub mod completers {
             .collect()
     }
 
+    /// Completes names of ACP agents that are configured but not yet connected (for :acp-connect).
+    pub fn acp_configured_agents(editor: &Editor, input: &str) -> Vec<Completion> {
+        let config = editor.config();
+        let connected: std::collections::HashSet<_> =
+            editor.acp.connected_names().cloned().collect();
+        let agents = config
+            .acp
+            .agents
+            .iter()
+            .filter(|a| !connected.contains(&a.name))
+            .map(|a| a.name.as_str());
+        fuzzy_match(input, agents, false)
+            .into_iter()
+            .map(|(name, _)| ((0..), Span::raw(name.to_string())))
+            .collect()
+    }
+
+    /// Completes names of connected ACP agents (for :acp-close, :acp-prompt).
+    pub fn acp_connected_agents(editor: &Editor, input: &str) -> Vec<Completion> {
+        let agents = editor.acp.connected_names().map(|s| s.as_str());
+        fuzzy_match(input, agents, false)
+            .into_iter()
+            .map(|(name, _)| ((0..), Span::raw(name.to_string())))
+            .collect()
+    }
+
     pub fn setting(_editor: &Editor, input: &str) -> Vec<Completion> {
         static KEYS: Lazy<Vec<String>> = Lazy::new(|| {
             let mut keys = Vec::new();

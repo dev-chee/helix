@@ -19,6 +19,7 @@ use helix_vcs::DiffProviderRegistry;
 
 use futures_util::stream::select_all::SelectAll;
 use futures_util::{future, StreamExt};
+use helix_acp::{AgentId, AgentRegistry};
 use helix_lsp::{Call, LanguageServerId};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
@@ -374,6 +375,8 @@ pub struct Config {
     #[serde(default)]
     pub search: SearchConfig,
     pub lsp: LspConfig,
+    /// ACP (Agent Client Protocol) configuration: default agents and agent list.
+    pub acp: AcpConfig,
     pub terminal: Option<TerminalConfig>,
     /// Column numbers at which to draw the rulers. Defaults to `[]`, meaning no rulers.
     pub rulers: Vec<u16>,
@@ -574,6 +577,60 @@ impl Default for LspConfig {
             goto_reference_include_declaration: true,
             display_color_swatches: true,
         }
+    }
+}
+
+/// ACP agent list and default agents for auto-connect. Configured in config.toml under [acp].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct AcpConfig {
+    /// Agent names to auto-connect when the editor starts. Must be names from `agents`.
+    pub default_agents: Vec<String>,
+    /// List of agent configurations (name, command, args, feature filters).
+    pub agents: Vec<AgentConfig>,
+}
+
+impl Default for AcpConfig {
+    fn default() -> Self {
+        Self {
+            default_agents: Vec::new(),
+            agents: Vec::new(),
+        }
+    }
+}
+
+/// Single ACP agent configuration. Feature filtering: only/excluded are sets of capability names (e.g. "plan", "translate").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct AgentConfig {
+    pub name: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// If non-empty, agent is used only for these features.
+    #[serde(default)]
+    pub only: HashSet<String>,
+    /// Features to exclude this agent from.
+    #[serde(default)]
+    pub excluded: HashSet<String>,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            command: String::new(),
+            args: Vec::new(),
+            only: HashSet::new(),
+            excluded: HashSet::new(),
+        }
+    }
+}
+
+impl AgentConfig {
+    /// Returns true if this agent is enabled for the given feature (e.g. "plan", "translate").
+    pub fn has_feature(&self, feature: &str) -> bool {
+        (self.only.is_empty() || self.only.contains(feature)) && !self.excluded.contains(feature)
     }
 }
 
@@ -1116,6 +1173,7 @@ impl Default for Config {
             undercurl: false,
             search: SearchConfig::default(),
             lsp: LspConfig::default(),
+            acp: AcpConfig::default(),
             terminal: get_terminal_provider(),
             rulers: Vec::new(),
             whitespace: WhitespaceConfig::default(),
@@ -1195,6 +1253,7 @@ pub struct Editor {
     pub macro_recording: Option<(char, Vec<KeyEvent>)>,
     pub macro_replaying: Vec<char>,
     pub language_servers: helix_lsp::Registry,
+    pub acp: AgentRegistry,
     pub diagnostics: Diagnostics,
     pub diff_providers: DiffProviderRegistry,
 
@@ -1256,6 +1315,7 @@ pub enum EditorEvent {
     DocumentSaved(DocumentSavedEventResult),
     ConfigEvent(ConfigEvent),
     LanguageServerMessage((LanguageServerId, Call)),
+    AcpMessage((AgentId, helix_acp::jsonrpc::Call)),
     DebuggerEvent((DebugAdapterId, dap::Payload)),
     IdleTimer,
     Redraw,
@@ -1321,6 +1381,7 @@ impl Editor {
         handlers: Handlers,
     ) -> Self {
         let language_servers = helix_lsp::Registry::new(syn_loader.clone());
+        let acp = helix_acp::AgentRegistry::new();
         let conf = config.load();
         let auto_pairs = (&conf.auto_pairs).into();
 
@@ -1341,6 +1402,7 @@ impl Editor {
             macro_replaying: Vec::new(),
             theme: theme_loader.default(),
             language_servers,
+            acp,
             diagnostics: Diagnostics::new(),
             diff_providers: DiffProviderRegistry::default(),
             debug_adapters: dap::registry::Registry::new(),
@@ -2272,6 +2334,9 @@ impl Editor {
                 }
                 Some(message) = self.language_servers.incoming.next() => {
                     return EditorEvent::LanguageServerMessage(message)
+                }
+                Some(message) = self.acp.incoming.next() => {
+                    return EditorEvent::AcpMessage(message)
                 }
                 Some(event) = self.debug_adapters.incoming.next() => {
                     return EditorEvent::DebuggerEvent(event)
