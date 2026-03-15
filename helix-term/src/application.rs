@@ -256,7 +256,7 @@ impl Application {
         ])
         .context("build signal handler")?;
 
-        let app = Self {
+        let mut app = Self {
             compositor,
             terminal,
             editor,
@@ -266,6 +266,7 @@ impl Application {
             lsp_progress: LspProgressMap::new(),
             theme_mode,
         };
+        app.start_default_acp_agents();
 
         Ok(app)
     }
@@ -375,6 +376,46 @@ impl Application {
             {
                 self.editor.reset_idle_timer();
             }
+        }
+    }
+
+    /// Start ACP agents listed in config.acp.default_agents (called once at startup).
+    fn start_default_acp_agents(&mut self) {
+        let config = self.editor.config();
+        if config.acp.default_agents.is_empty() {
+            return;
+        }
+        let root = helix_stdx::env::current_working_dir();
+        for name in &config.acp.default_agents {
+            if self.editor.acp.get_by_name(name).is_some() {
+                continue;
+            }
+            let Some(agent_config) = config.acp.agents.iter().find(|a| &a.name == name) else {
+                log::warn!("ACP default agent '{}' not found in config.acp.agents", name);
+                continue;
+            };
+            if let Err(e) = self.editor.acp.start_agent(
+                name.clone(),
+                &agent_config.command,
+                &agent_config.args,
+                &root,
+            ) {
+                log::warn!("ACP failed to start agent '{}': {}", name, e);
+                continue;
+            }
+            let client = self.editor.acp.get_by_name(name).cloned().unwrap();
+            let notify = client.initialize_notify.clone();
+            let name_clone = name.clone();
+            tokio::spawn(async move {
+                const ACP_VERSION: u32 = 1;
+                match client.initialize(ACP_VERSION).await {
+                    Ok(resp) => {
+                        client.set_initialized(resp);
+                        notify.notify_one();
+                    }
+                    Err(e) => log::error!("ACP initialize failed for {}: {}", name_clone, e),
+                }
+            });
         }
     }
 
@@ -1188,6 +1229,8 @@ impl Application {
                 if method == "session/update" {
                     if let Ok(update) = params.parse::<helix_acp_types::SessionNotification>() {
                         log::debug!("ACP session/update from {}: {:?}", agent.name(), update.update);
+                        let content = serde_json::to_string(&update.update).unwrap_or_else(|_| String::new());
+                        self.editor.record_acp_update(agent.name(), content);
                     }
                 }
             }

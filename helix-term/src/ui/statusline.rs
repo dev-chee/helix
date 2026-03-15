@@ -157,6 +157,19 @@ where
         helix_view::editor::StatusLineElement::VersionControl => render_version_control,
         helix_view::editor::StatusLineElement::Register => render_register,
         helix_view::editor::StatusLineElement::CurrentWorkingDirectory => render_cwd,
+        helix_view::editor::StatusLineElement::Acp => render_acp,
+    }
+}
+
+fn render_acp<'a, F>(context: &mut RenderContext<'a>, write: F)
+where
+    F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
+{
+    let names: Vec<String> = context.editor.acp.connected_names().cloned().collect();
+    if names.is_empty() {
+        write(context, " ".into());
+    } else {
+        write(context, format!(" ACP: {} ", names.join(", ")).into());
     }
 }
 

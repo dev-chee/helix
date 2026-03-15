@@ -1831,6 +1831,9 @@ fn acp_prompt(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> a
     if clients.is_empty() {
         bail!("No connected agents");
     }
+    for client in &clients {
+        cx.editor.record_acp_prompt(client.name(), &prompt_text);
+    }
     let content = vec![helix_acp_types::ContentBlock::Text {
         text: prompt_text.clone(),
     }];
@@ -1861,16 +1864,60 @@ fn acp_prompt(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> a
     Ok(())
 }
 
-fn acp_history(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+fn acp_history(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
     }
-    let agents: Vec<String> = cx.editor.acp.connected_names().cloned().collect();
-    if agents.is_empty() {
-        cx.editor.set_status("No connected ACP agents".to_string());
-        return Ok(());
+    let agent_name = args.first().map(|s| s.to_string());
+    let agent_name = match agent_name {
+        Some(n) if cx.editor.acp.get_by_name(&n).is_some() => n,
+        Some(n) => {
+            cx.editor.set_status(format!("Unknown or disconnected agent: {}", n));
+            return Ok(());
+        }
+        None => {
+            let agents: Vec<String> = cx.editor.acp.connected_names().cloned().collect();
+            if agents.is_empty() {
+                cx.editor.set_status("No connected ACP agents".to_string());
+            } else {
+                cx.editor.set_status(format!(
+                    "Usage: :acp-history <agent>. Connected: {}",
+                    agents.join(", ")
+                ));
+            }
+            return Ok(());
+        }
+    };
+    let history = cx
+        .editor
+        .acp_session_history
+        .get(&agent_name)
+        .cloned()
+        .unwrap_or_default();
+    let mut md = format!("# ACP history: {}\n\n", agent_name);
+    for (role, content) in &history {
+        let block = if content.lines().count() > 1 || content.len() > 60 {
+            format!("```\n{}\n```", content.trim())
+        } else {
+            content.trim().to_string()
+        };
+        md.push_str(&format!("## {}\n\n{}\n\n", role, block));
     }
-    cx.editor.set_status(format!("ACP session history: {} (not yet implemented)", agents.join(", ")));
+    if history.is_empty() {
+        md.push_str("_No messages yet._");
+    }
+    let md = md;
+    let callback = async move {
+        let call: job::Callback = job::Callback::EditorCompositor(Box::new(
+            move |editor: &mut Editor, compositor: &mut Compositor| {
+                let contents = ui::Markdown::new(md.clone(), editor.syn_loader.clone());
+                let popup = ui::Popup::new("acp-history", contents).auto_close(true);
+                compositor.replace_or_push("acp-history", popup);
+            },
+        ));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
     Ok(())
 }
 

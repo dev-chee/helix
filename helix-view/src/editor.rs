@@ -772,6 +772,9 @@ pub enum StatusLineElement {
 
     /// The base of current working directory
     CurrentWorkingDirectory,
+
+    /// Connected ACP agents (e.g. "ACP: name1, name2")
+    Acp,
 }
 
 // Cursor shape is read and used on every rendered frame and so needs
@@ -1254,6 +1257,8 @@ pub struct Editor {
     pub macro_replaying: Vec<char>,
     pub language_servers: helix_lsp::Registry,
     pub acp: AgentRegistry,
+    /// Per-agent ACP session history: agent name -> list of (role, content).
+    pub acp_session_history: HashMap<String, Vec<(String, String)>>,
     pub diagnostics: Diagnostics,
     pub diff_providers: DiffProviderRegistry,
 
@@ -1403,6 +1408,7 @@ impl Editor {
             theme: theme_loader.default(),
             language_servers,
             acp,
+            acp_session_history: HashMap::new(),
             diagnostics: Diagnostics::new(),
             diff_providers: DiffProviderRegistry::default(),
             debug_adapters: dap::registry::Registry::new(),
@@ -1580,6 +1586,22 @@ impl Editor {
         self.language_servers
             .get_by_id(language_server_id)
             .map(|client| &**client)
+    }
+
+    /// Record a user prompt sent to an ACP agent (for session history).
+    pub fn record_acp_prompt(&mut self, agent_name: &str, content: &str) {
+        self.acp_session_history
+            .entry(agent_name.to_string())
+            .or_default()
+            .push(("user".to_string(), content.to_string()));
+    }
+
+    /// Record an assistant/agent update (e.g. from session/update) for session history.
+    pub fn record_acp_update(&mut self, agent_name: &str, content: String) {
+        self.acp_session_history
+            .entry(agent_name.to_string())
+            .or_default()
+            .push(("assistant".to_string(), content));
     }
 
     /// Refreshes the language server for a given document
