@@ -1,6 +1,7 @@
 use crate::keymap;
 use crate::keymap::{merge_keys, KeyTrie};
 use helix_loader::merge_toml_values;
+use helix_view::editor::AcpConfig;
 use helix_view::{document::Mode, theme};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -22,6 +23,9 @@ pub struct ConfigRaw {
     pub theme: Option<theme::Config>,
     pub keys: Option<HashMap<Mode, KeyTrie>>,
     pub editor: Option<toml::Value>,
+    /// Top-level [acp] section; merged into editor.acp (local overrides global).
+    #[serde(default)]
+    pub acp: Option<toml::Value>,
 }
 
 impl Default for Config {
@@ -55,6 +59,11 @@ impl Display for ConfigLoadError {
     }
 }
 
+fn parse_acp_config(v: &toml::Value) -> Option<AcpConfig> {
+    let s = toml::to_string(v).ok()?;
+    toml::from_str(&s).ok()
+}
+
 impl Config {
     pub fn load(
         global: Result<String, ConfigLoadError>,
@@ -74,7 +83,7 @@ impl Config {
                     merge_keys(&mut keys, local_keys)
                 }
 
-                let editor = match (global.editor, local.editor) {
+                let mut editor = match (global.editor, local.editor) {
                     (None, None) => helix_view::editor::Config::default(),
                     (None, Some(val)) | (Some(val), None) => {
                         val.try_into().map_err(ConfigLoadError::BadConfig)?
@@ -83,6 +92,11 @@ impl Config {
                         .try_into()
                         .map_err(ConfigLoadError::BadConfig)?,
                 };
+                if let Some(acp_val) = local.acp.or(global.acp) {
+                    if let Some(acp) = parse_acp_config(&acp_val) {
+                        editor.acp = acp;
+                    }
+                }
 
                 Config {
                     theme: local.theme.or(global.theme),
@@ -100,13 +114,19 @@ impl Config {
                 if let Some(keymap) = config.keys {
                     merge_keys(&mut keys, keymap);
                 }
+                let mut editor = config.editor.map_or_else(
+                    || Ok(helix_view::editor::Config::default()),
+                    |val| val.try_into().map_err(ConfigLoadError::BadConfig),
+                )?;
+                if let Some(acp_val) = config.acp {
+                    if let Some(acp) = parse_acp_config(&acp_val) {
+                        editor.acp = acp;
+                    }
+                }
                 Config {
                     theme: config.theme,
                     keys,
-                    editor: config.editor.map_or_else(
-                        || Ok(helix_view::editor::Config::default()),
-                        |val| val.try_into().map_err(ConfigLoadError::BadConfig),
-                    )?,
+                    editor,
                 }
             }
 
@@ -183,5 +203,24 @@ mod tests {
         // From the Default trait
         let default_keys = Config::default().keys;
         assert_eq!(default_keys, keymap::default());
+    }
+
+    #[test]
+    fn top_level_acp_section_parsed() {
+        // [acp] uses kebab-case keys to match AcpConfig (serde rename_all = "kebab-case")
+        let config = Config::load_test(
+            r#"
+            [acp]
+            default-agents = ["my-agent"]
+            [[acp.agents]]
+            name = "my-agent"
+            command = "my-cmd"
+            args = []
+        "#,
+        );
+        assert_eq!(config.editor.acp.default_agents, vec!["my-agent"]);
+        assert_eq!(config.editor.acp.agents.len(), 1);
+        assert_eq!(config.editor.acp.agents[0].name, "my-agent");
+        assert_eq!(config.editor.acp.agents[0].command, "my-cmd");
     }
 }
