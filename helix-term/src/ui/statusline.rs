@@ -542,7 +542,9 @@ where
         .unwrap_or_default()
         .to_string();
 
-    write(context, head.into());
+    if !head.is_empty() {
+        write(context, format!(" ⎇ {} ", head).into());
+    }
 }
 
 fn render_register<'a, F>(context: &mut RenderContext<'a>, write: F)
