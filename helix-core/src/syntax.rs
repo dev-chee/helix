@@ -44,6 +44,7 @@ pub struct LanguageData {
     textobject_query: OnceCell<Option<TextObjectQuery>>,
     tag_query: OnceCell<Option<TagQuery>>,
     rainbow_query: OnceCell<Option<RainbowQuery>>,
+    fold_query: OnceCell<Option<FoldQuery>>,
 }
 
 impl LanguageData {
@@ -55,6 +56,7 @@ impl LanguageData {
             textobject_query: OnceCell::new(),
             tag_query: OnceCell::new(),
             rainbow_query: OnceCell::new(),
+            fold_query: OnceCell::new(),
         }
     }
 
@@ -222,6 +224,36 @@ impl LanguageData {
             .get_or_init(|| {
                 let grammar = self.syntax_config(loader)?.grammar;
                 Self::compile_rainbow_query(grammar, &self.config)
+                    .map_err(|err| {
+                        log::error!("{err}");
+                    })
+                    .ok()
+                    .flatten()
+            })
+            .as_ref()
+    }
+
+    /// Compiles the folds.scm query for a language.
+    /// This function should only be used by this module or the xtask crate.
+    pub fn compile_fold_query(
+        grammar: Grammar,
+        config: &LanguageConfiguration,
+    ) -> Result<Option<FoldQuery>> {
+        let name = &config.language_id;
+        let text = read_query(name, "folds.scm");
+        if text.is_empty() {
+            return Ok(None);
+        }
+        let query = Query::new(grammar, &text, |_, _| Ok(()))
+            .with_context(|| format!("Failed to compile folds.scm query for '{name}'"))?;
+        Ok(Some(FoldQuery::new(query)))
+    }
+
+    fn fold_query(&self, loader: &Loader) -> Option<&FoldQuery> {
+        self.fold_query
+            .get_or_init(|| {
+                let grammar = self.syntax_config(loader)?.grammar;
+                Self::compile_fold_query(grammar, &self.config)
                     .map_err(|err| {
                         log::error!("{err}");
                     })
@@ -422,6 +454,10 @@ impl Loader {
 
     fn rainbow_query(&self, lang: Language) -> Option<&RainbowQuery> {
         self.language(lang).rainbow_query(self)
+    }
+
+    pub fn fold_query(&self, lang: Language) -> Option<&FoldQuery> {
+        self.language(lang).fold_query(self)
     }
 
     pub fn language_server_configs(&self) -> &HashMap<String, LanguageServerConfiguration> {
@@ -1065,6 +1101,43 @@ impl TextObjectQuery {
             }
         });
         Some(capture_node)
+    }
+}
+
+#[derive(Debug)]
+pub struct FoldQuery {
+    query: Query,
+    fold_capture: Option<Capture>,
+}
+
+impl FoldQuery {
+    pub fn new(query: Query) -> Self {
+        let fold_capture = query.get_capture("fold");
+        Self {
+            query,
+            fold_capture,
+        }
+    }
+
+    /// Returns all `@fold` capture ranges as (start_byte, end_byte).
+    pub fn fold_ranges<'a>(
+        &'a self,
+        node: &Node<'a>,
+        slice: RopeSlice<'a>,
+    ) -> Vec<ops::Range<usize>> {
+        let Some(capture) = self.fold_capture else {
+            return Vec::new();
+        };
+        let mut cursor = InactiveQueryCursor::new(0..u32::MAX, TREE_SITTER_MATCH_LIMIT)
+            .execute_query(&self.query, node, RopeInput::new(slice));
+        let mut ranges = Vec::new();
+        while let Some(mat) = cursor.next_match() {
+            for node in mat.nodes_for_capture(capture) {
+                let range = node.byte_range();
+                ranges.push(range.start as usize..range.end as usize);
+            }
+        }
+        ranges
     }
 }
 

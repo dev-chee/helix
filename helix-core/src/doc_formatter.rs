@@ -174,6 +174,8 @@ pub struct DocumentFormatter<'t> {
     text_fmt: &'t TextFormat,
     annotations: &'t TextAnnotations<'t>,
 
+    /// The full document text, stored for fold range skipping.
+    text: RopeSlice<'t>,
     /// The visual position at the end of the last yielded word boundary
     visual_pos: Position,
     graphemes: RopeGraphemes<'t>,
@@ -219,6 +221,7 @@ impl<'t> DocumentFormatter<'t> {
         DocumentFormatter {
             text_fmt,
             annotations,
+            text,
             visual_pos: Position { row: 0, col: 0 },
             graphemes: text.slice(block_char_idx..).graphemes(),
             char_pos: block_char_idx,
@@ -427,6 +430,36 @@ impl<'t> DocumentFormatter<'t> {
     pub fn next_visual_pos(&self) -> Position {
         self.visual_pos
     }
+
+    /// Skip past a folded region by advancing the graphemes iterator.
+    fn perform_fold_skip(&mut self, fold_end_char: usize) {
+        let target = fold_end_char.min(self.text.len_chars());
+        if self.char_pos >= target {
+            return;
+        }
+
+        let end_line = self.text.char_to_line(target.min(self.text.len_chars().saturating_sub(1)));
+        self.line_pos = end_line;
+        self.char_pos = target;
+
+        // Recreate the graphemes iterator from the new position
+        if target < self.text.len_chars() {
+            self.graphemes = self.text.slice(target..).graphemes();
+        } else {
+            self.graphemes = self.text.slice(self.text.len_chars()..).graphemes();
+        }
+
+        // Clear soft-wrap state
+        self.word_buf.clear();
+        self.word_i = 0;
+        self.peeked_grapheme = None;
+        self.indent_level = None;
+        self.inline_annotation_graphemes = None;
+        self.exhausted = false;
+
+        // Reset annotations to new position
+        self.annotations.reset_pos(self.char_pos);
+    }
 }
 
 impl<'t> Iterator for DocumentFormatter<'t> {
@@ -470,6 +503,11 @@ impl<'t> Iterator for DocumentFormatter<'t> {
             self.visual_pos.col = 0;
             if !grapheme.is_virtual() {
                 self.line_pos += 1;
+            }
+
+            // Skip folded regions after a newline
+            if let Some(fold_end) = self.annotations.fold_at(self.char_pos) {
+                self.perform_fold_skip(fold_end);
             }
         } else {
             self.visual_pos.col += grapheme.width();

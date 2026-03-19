@@ -2396,6 +2396,48 @@ impl Document {
     pub fn has_language_server_with_feature(&self, feature: LanguageServerFeature) -> bool {
         self.language_servers_with_feature(feature).next().is_some()
     }
+
+    /// Compute all foldable ranges for this document.
+    /// Uses tree-sitter fold queries if available, falls back to indent-based folding.
+    /// Returns sorted (start_line, end_line) pairs.
+    pub fn foldable_ranges(&self) -> Vec<(usize, usize)> {
+        let text = self.text().slice(..);
+
+        if let Some(syntax) = &self.syntax {
+            let loader = self.syn_loader.load();
+            let loader: &helix_core::syntax::Loader = &loader;
+            let root_lang = syntax.root_language();
+            if let Some(fold_query) = loader.fold_query(root_lang) {
+                let root = syntax.tree().root_node();
+                let byte_ranges = fold_query.fold_ranges(&root, text);
+                let mut ranges: Vec<(usize, usize)> = byte_ranges
+                    .into_iter()
+                    .map(|byte_range| {
+                        let start_line = text.byte_to_line(byte_range.start);
+                        let end_line = text.byte_to_line(
+                            byte_range.end.saturating_sub(1).max(byte_range.start),
+                        );
+                        (start_line, end_line)
+                    })
+                    .filter(|(start, end)| end > start)
+                    .collect();
+                ranges.sort_by_key(|&(start, _)| start);
+                ranges.dedup();
+                return ranges;
+            }
+        }
+
+        // Fallback: indent-based folding
+        let tab_width = self
+            .language_config()
+            .and_then(|config| config.indent.as_ref())
+            .map(|indent| indent.tab_width)
+            .unwrap_or(4);
+        helix_core::fold::indent_based_fold_ranges(text, tab_width)
+            .into_iter()
+            .map(|r| (r.start_line, r.end_line))
+            .collect()
+    }
 }
 
 #[derive(Debug, Default)]

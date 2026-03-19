@@ -3,6 +3,7 @@ use crate::{
     annotations::diagnostics::InlineDiagnostics,
     document::{DocumentColorSwatches, DocumentInlayHints},
     editor::{GutterConfig, GutterType},
+    fold::FoldState,
     graphics::Rect,
     handlers::diagnostics::DiagnosticsHandler,
     Align, Document, DocumentId, Theme, ViewId,
@@ -157,6 +158,10 @@ pub struct View {
     // left to future work. For now we treat all views as focused and give them
     // each their own handler.
     pub diagnostics_handler: DiagnosticsHandler,
+    /// Per-view fold state: tracks which regions are folded in this view.
+    pub fold_state: FoldState,
+    /// Cached inline annotations for fold indicators ("⋯"), recomputed when fold state changes.
+    pub fold_annotations: Vec<helix_core::text_annotations::InlineAnnotation>,
 }
 
 impl fmt::Debug for View {
@@ -182,7 +187,19 @@ impl View {
             gutters,
             doc_revisions: HashMap::new(),
             diagnostics_handler: DiagnosticsHandler::new(),
+            fold_state: FoldState::new(),
+            fold_annotations: Vec::new(),
         }
+    }
+
+    /// Recompute the cached fold indicator annotations from the current fold state.
+    pub fn update_fold_annotations(&mut self, doc: &Document) {
+        let text = doc.text().slice(..);
+        let positions = self.fold_state.fold_indicator_positions(text);
+        self.fold_annotations = positions
+            .into_iter()
+            .map(|pos| helix_core::text_annotations::InlineAnnotation::new(pos, " \u{22ef}"))
+            .collect();
     }
 
     pub fn add_to_history(&mut self, id: DocumentId) {
@@ -441,7 +458,7 @@ impl View {
 
     /// Get the text annotations to display in the current view for the given document and theme.
     pub fn text_annotations<'a>(
-        &self,
+        &'a self,
         doc: &'a Document,
         theme: Option<&Theme>,
     ) -> TextAnnotations<'a> {
@@ -511,6 +528,16 @@ impl View {
                 doc.view_offset(self.id).horizontal_offset,
                 config,
             ));
+        }
+
+        // Add fold ranges: skip hidden lines and add fold indicators
+        if self.fold_state.iter().next().is_some() {
+            let text = doc.text().slice(..);
+            let char_ranges = self.fold_state.char_ranges(text);
+            text_annotations.add_fold_ranges(char_ranges);
+
+            let fold_highlight = theme.and_then(|t| t.find_highlight("ui.fold.placeholder"));
+            text_annotations.add_inline_annotations(&self.fold_annotations, fold_highlight);
         }
 
         text_annotations
@@ -662,6 +689,12 @@ impl View {
         self.jumps.apply(transaction, doc);
         self.doc_revisions
             .insert(doc.id(), doc.get_current_revision());
+
+        // Invalidate folds when document content changes
+        if self.fold_state.iter().next().is_some() && !transaction.changes().is_empty() {
+            self.fold_state.unfold_all();
+            self.fold_annotations.clear();
+        }
     }
 
     pub fn sync_changes(&mut self, doc: &mut Document) {

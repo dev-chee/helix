@@ -616,6 +616,12 @@ impl MappableCommand {
         goto_prev_tabstop, "Goto next snippet placeholder",
         rotate_selections_first, "Make the first selection your primary one",
         rotate_selections_last, "Make the last selection your primary one",
+        fold, "Fold at cursor",
+        unfold, "Unfold at cursor",
+        toggle_fold, "Toggle fold at cursor",
+        fold_selection, "Fold selections",
+        fold_all, "Fold all foldable regions",
+        unfold_all, "Unfold all",
     );
 }
 
@@ -7023,4 +7029,65 @@ fn lsp_or_syntax_workspace_symbol_picker(cx: &mut Context) {
     } else {
         syntax_workspace_symbol_picker(cx);
     }
+}
+
+// --- Code Folding ---
+
+fn fold(cx: &mut Context) {
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+    let cursor_line = text.char_to_line(doc.selection(view.id).primary().cursor(text));
+    let foldable = doc.foldable_ranges();
+    if view.fold_state.fold_at(cursor_line, &foldable) {
+        view.update_fold_annotations(doc);
+    }
+}
+
+fn unfold(cx: &mut Context) {
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+    let cursor_line = text.char_to_line(doc.selection(view.id).primary().cursor(text));
+    if view.fold_state.unfold_at(cursor_line) {
+        view.update_fold_annotations(doc);
+    }
+}
+
+fn toggle_fold(cx: &mut Context) {
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+    let cursor_line = text.char_to_line(doc.selection(view.id).primary().cursor(text));
+    let foldable = doc.foldable_ranges();
+    if view.fold_state.toggle_at(cursor_line, &foldable) {
+        view.update_fold_annotations(doc);
+    }
+}
+
+fn fold_selection(cx: &mut Context) {
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+    let selection = doc.selection(view.id).clone();
+    let mut folded_any = false;
+    for range in selection.ranges() {
+        let start_line = text.char_to_line(range.from());
+        let end_line = text.char_to_line(range.to());
+        if view.fold_state.fold_selection(start_line, end_line) {
+            folded_any = true;
+        }
+    }
+    if folded_any {
+        view.update_fold_annotations(doc);
+    }
+}
+
+fn fold_all(cx: &mut Context) {
+    let (view, doc) = current!(cx.editor);
+    let foldable = doc.foldable_ranges();
+    view.fold_state.fold_all(&foldable);
+    view.update_fold_annotations(doc);
+}
+
+fn unfold_all(cx: &mut Context) {
+    let (view, doc) = current!(cx.editor);
+    view.fold_state.unfold_all();
+    view.update_fold_annotations(doc);
 }

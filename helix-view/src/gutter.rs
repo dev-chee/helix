@@ -32,6 +32,7 @@ impl GutterType {
             GutterType::LineNumbers => line_numbers(editor, doc, view, theme, is_focused),
             GutterType::Spacer => padding(editor, doc, view, theme, is_focused),
             GutterType::Diff => diff(editor, doc, view, theme, is_focused),
+            GutterType::Folds => fold_indicators(editor, doc, view, theme, is_focused),
         }
     }
 
@@ -41,6 +42,7 @@ impl GutterType {
             GutterType::LineNumbers => line_numbers_width(view, doc),
             GutterType::Spacer => 1,
             GutterType::Diff => 1,
+            GutterType::Folds => 1,
         }
     }
 }
@@ -302,6 +304,51 @@ fn execution_pause_indicator<'doc>(
             let sym = "▶";
             write!(out, "{}", sym).unwrap();
             Some(style)
+        },
+    )
+}
+
+pub fn fold_indicators<'doc>(
+    _editor: &'doc Editor,
+    doc: &'doc Document,
+    view: &View,
+    theme: &Theme,
+    _is_focused: bool,
+) -> GutterFn<'doc> {
+    let fold_style = theme.try_get("ui.fold.indicator").unwrap_or_else(|| theme.get("ui.linenr"));
+    let fold_active_style = theme
+        .try_get("ui.fold.indicator.active")
+        .unwrap_or(fold_style);
+
+    let foldable_ranges = doc.foldable_ranges();
+    let fold_state = &view.fold_state;
+
+    let mut foldable_set: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    for &(start, _end) in &foldable_ranges {
+        foldable_set.insert(start);
+    }
+
+    let folded_starts: std::collections::HashSet<usize> = fold_state
+        .iter()
+        .map(|f| f.start_line)
+        .collect();
+
+    Box::new(
+        move |line: usize, _selected: bool, first_visual_line: bool, out: &mut String| {
+            if !first_visual_line {
+                return None;
+            }
+
+            if folded_starts.contains(&line) {
+                write!(out, "▶").ok();
+                Some(fold_active_style)
+            } else if foldable_set.contains(&line) {
+                write!(out, "▼").ok();
+                Some(fold_style)
+            } else {
+                write!(out, " ").ok();
+                None
+            }
         },
     )
 }

@@ -272,6 +272,14 @@ impl<T: ?Sized> Drop for RawBox<T> {
     }
 }
 
+/// A character range to skip during document formatting (used for code folding).
+/// The range `start..end` represents characters that should be hidden.
+#[derive(Debug, Clone)]
+pub struct FoldRangeAnnotation {
+    pub start: usize,
+    pub end: usize,
+}
+
 /// Annotations that change that is displayed when the document is render.
 /// Also commonly called virtual text.
 #[derive(Default)]
@@ -279,6 +287,9 @@ pub struct TextAnnotations<'a> {
     inline_annotations: Vec<Layer<'a, InlineAnnotation, Option<Highlight>>>,
     overlays: Vec<Layer<'a, Overlay, Option<Highlight>>>,
     line_annotations: Vec<(Cell<usize>, RawBox<dyn LineAnnotation + 'a>)>,
+    /// Sorted, non-overlapping character ranges to skip (folded regions).
+    fold_ranges: Vec<FoldRangeAnnotation>,
+    fold_range_idx: Cell<usize>,
 }
 
 impl Debug for TextAnnotations<'_> {
@@ -298,6 +309,10 @@ impl<'a> TextAnnotations<'a> {
         for (next_anchor, layer) in &self.line_annotations {
             next_anchor.set(unsafe { layer.get().reset_pos(char_idx) });
         }
+        let fold_idx = self
+            .fold_ranges
+            .partition_point(|f| f.end <= char_idx);
+        self.fold_range_idx.set(fold_idx);
     }
 
     pub fn collect_overlay_highlights(&self, char_range: Range<usize>) -> OverlayHighlights {
@@ -368,6 +383,32 @@ impl<'a> TextAnnotations<'a> {
     /// so that virtual text lines are automatically skipped.
     pub fn clear_line_annotations(&mut self) {
         self.line_annotations.clear();
+    }
+
+    /// Add fold ranges (character ranges to skip during formatting).
+    /// Ranges must be sorted by start position and non-overlapping.
+    pub fn add_fold_ranges(&mut self, ranges: impl IntoIterator<Item = Range<usize>>) -> &mut Self {
+        self.fold_ranges = ranges
+            .into_iter()
+            .map(|r| FoldRangeAnnotation {
+                start: r.start,
+                end: r.end,
+            })
+            .collect();
+        self.fold_range_idx.set(0);
+        self
+    }
+
+    /// If `char_idx` is at the start of a fold range, return the end position.
+    pub(crate) fn fold_at(&self, char_idx: usize) -> Option<usize> {
+        let idx = self.fold_range_idx.get();
+        if let Some(fold) = self.fold_ranges.get(idx) {
+            if char_idx >= fold.start && char_idx < fold.end {
+                self.fold_range_idx.set(idx + 1);
+                return Some(fold.end);
+            }
+        }
+        None
     }
 
     pub(crate) fn next_inline_annotation_at(
