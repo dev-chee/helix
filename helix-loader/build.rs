@@ -2,10 +2,6 @@ use std::borrow::Cow;
 use std::path::Path;
 use std::process::Command;
 
-const MAJOR: &str = env!("CARGO_PKG_VERSION_MAJOR");
-const MINOR: &str = env!("CARGO_PKG_VERSION_MINOR");
-const PATCH: &str = env!("CARGO_PKG_VERSION_PATCH");
-
 fn main() {
     let git_hash = Command::new("git")
         .args(["rev-parse", "HEAD"])
@@ -15,17 +11,7 @@ fn main() {
         .and_then(|x| String::from_utf8(x.stdout).ok())
         .or_else(|| option_env!("HELIX_NIX_BUILD_REV").map(|s| s.to_string()));
 
-    let minor = if MINOR.len() == 1 {
-        // Print single-digit months in '0M' format
-        format!("0{MINOR}")
-    } else {
-        MINOR.to_string()
-    };
-    let calver = if PATCH == "0" {
-        format!("{MAJOR}.{minor}")
-    } else {
-        format!("{MAJOR}.{minor}.{PATCH}")
-    };
+    let calver = env!("CARGO_PKG_VERSION");
     let version: Cow<_> = match &git_hash {
         Some(git_hash) => format!("{} ({})", calver, &git_hash[..8]).into(),
         None => calver.into(),
