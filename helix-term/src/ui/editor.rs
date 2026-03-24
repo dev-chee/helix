@@ -1314,6 +1314,56 @@ impl EditorView {
                 EventResult::Consumed(None)
             }
 
+            // Handle horizontal mouse scroll events.
+            // Adjusts the view's horizontal_offset to scroll the viewport
+            // left or right by `scroll_lines` columns (same config as vertical scroll).
+            // Horizontal scrolling is skipped when soft_wrap is enabled,
+            // since horizontal_offset is meaningless in soft-wrap mode.
+            MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => {
+                let current_view = cxt.editor.tree.focus;
+
+                // Determine which view the mouse cursor is hovering over,
+                // so we scroll the correct view (may differ from focused view in splits).
+                match pos_and_view(cxt.editor, row, column, false) {
+                    Some((_, view_id)) => cxt.editor.tree.focus = view_id,
+                    None => return EventResult::Ignored(None),
+                }
+
+                let (view, doc) = current!(cxt.editor);
+
+                // Skip horizontal scroll when soft_wrap is enabled:
+                // in soft-wrap mode, all content is visible within the viewport width
+                // and horizontal_offset is always kept at 0.
+                let soft_wrap = doc.text_format(view.inner_area(doc).width, None).soft_wrap;
+                if !soft_wrap {
+                    let mut view_offset = doc.view_offset(view.id);
+                    // Number of columns to scroll per mouse wheel tick,
+                    // reusing the same `scroll_lines` config as vertical scrolling.
+                    let offset = config.scroll_lines.unsigned_abs();
+
+                    match event.kind {
+                        MouseEventKind::ScrollRight => {
+                            // Scroll viewport rightward by increasing horizontal_offset
+                            view_offset.horizontal_offset =
+                                view_offset.horizontal_offset.saturating_add(offset);
+                        }
+                        MouseEventKind::ScrollLeft => {
+                            // Scroll viewport leftward, saturating at 0 (document start)
+                            view_offset.horizontal_offset =
+                                view_offset.horizontal_offset.saturating_sub(offset);
+                        }
+                        _ => unreachable!(),
+                    }
+
+                    doc.set_view_offset(view.id, view_offset);
+                }
+
+                // Restore the original focused view
+                cxt.editor.tree.focus = current_view;
+
+                EventResult::Consumed(None)
+            }
+
             MouseEventKind::Up(MouseButton::Left) => {
                 if !config.middle_click_paste {
                     return EventResult::Ignored(None);
