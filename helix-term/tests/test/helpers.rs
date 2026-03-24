@@ -187,6 +187,58 @@ pub async fn test_key_sequences(
     Ok(())
 }
 
+/// Send a sequence of raw Events (key, mouse, or other) to the application,
+/// run the event loop until idle, then call an optional test assertion function.
+/// This is useful for testing mouse events which cannot be expressed as key macros.
+#[allow(clippy::type_complexity)]
+pub async fn test_event_sequence(
+    app: &mut Application,
+    events: Vec<Event>,
+    test_fn: Option<&dyn Fn(&Application)>,
+    should_exit: bool,
+) -> anyhow::Result<()> {
+    const TIMEOUT: Duration = Duration::from_millis(500);
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut rx_stream = UnboundedReceiverStream::new(rx);
+
+    // Send all events through the channel
+    for event in events {
+        log::trace!("sending event: {:?}", event);
+        tx.send(Ok(event))?;
+    }
+
+    let app_exited = !app.event_loop_until_idle(&mut rx_stream).await;
+
+    if app_exited != should_exit {
+        bail!("expected app to exit: {} != {}", should_exit, app_exited);
+    }
+
+    if let Some(test) = test_fn {
+        test(app);
+    }
+
+    if !should_exit {
+        // Send quit command to clean up
+        for key_event in parse_macro("<esc>:q!<ret>")?.into_iter() {
+            tx.send(Ok(Event::Key(KeyEvent::from(key_event))))?;
+        }
+
+        let event_loop = app.event_loop(&mut rx_stream);
+        tokio::time::timeout(TIMEOUT, event_loop).await?;
+    }
+
+    let errs = app.close().await;
+    if !errs.is_empty() {
+        log::error!("Errors closing app");
+        for err in errs {
+            log::error!("{}", err);
+        }
+        bail!("Error closing app");
+    }
+
+    Ok(())
+}
+
 pub async fn test_key_sequence_with_input_text<T: Into<TestCase>>(
     app: Option<Application>,
     test_case: T,
